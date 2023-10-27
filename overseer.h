@@ -74,7 +74,7 @@ struct datagram_format {
  * @param port The port to listen on.
  * @return The socket descriptor if successful, -1 otherwise.
  */
-int init_overseer(int port);
+int init_overseer(const char* ip, int port);
 
 /**
  * The main function for the TCP server thread. It listens for connections
@@ -118,9 +118,9 @@ void initialize_global_data();
 
 void register_card_reader(char* msg);
 
-int init_udp_server(char* address_port);
+int init_udp_server(const char* address_port);
 
-int init_tcp_server(char* address_port);
+int init_tcp_server(const char* address_port);
 
 void register_fire_alarm(char* msg);
 

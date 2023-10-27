@@ -41,7 +41,7 @@ struct SharedMemory shared_memory = {
     PTHREAD_COND_INITIALIZER, 
 };
 
-int init_overseer(int port) {
+int init_overseer(const char* ip, int port) {
     int sockfd;
     struct sockaddr_in server_addr;
 
@@ -53,7 +53,7 @@ int init_overseer(int port) {
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_addr.s_addr = inet_addr(ip); // Use the given IP address
     server_addr.sin_port = htons(port);
 
     if (bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
@@ -69,9 +69,14 @@ int init_overseer(int port) {
     return sockfd;
 }
 
-int init_udp_server(char* address_port) {
+int init_udp_server(const char* address_port) {
     int sockfd;
     struct sockaddr_in server_addr;
+    char ip[16];
+    int port;
+
+    // Extract IP and port from address_port
+    sscanf(address_port, "%15[^:]:%d", ip, &port);
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -81,9 +86,9 @@ int init_udp_server(char* address_port) {
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(atoi(address_port));
-    
+    server_addr.sin_addr.s_addr = inet_addr(ip); // Use the given IP address
+    server_addr.sin_port = htons(port);
+
     if (bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("Error binding UDP socket");
         return -1;
@@ -92,10 +97,14 @@ int init_udp_server(char* address_port) {
     return sockfd;
 }
 
-int init_tcp_server(char* address_port) {
-   
-    int port = atoi(address_port); // Convert port from string to integer
-    return init_overseer(port);
+int init_tcp_server(const char* address_port) {
+    char ip[16];
+    int port;
+
+    sscanf(address_port, "%15[^:]:%d", ip, &port); // Extract IP and port
+    printf("Extracted IP: %s, Port: %d\n", ip, port);
+
+    return init_overseer(ip, port);
 }
 
 void initialize_global_data() {
@@ -127,6 +136,7 @@ void* udp_server_thread(void* arg) {
     }
 
     while (1) {
+        printf("UDP\n");
         char buffer[1024];
         socklen_t len = sizeof(client_addr);
         int n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&client_addr, &len);
@@ -145,6 +155,7 @@ void* tcp_server_thread(void* arg) {
     socklen_t addr_len = sizeof(client_addr);
 
     while (1) {
+        printf("TCP \n");
         new_socket = accept(sockfd, (struct sockaddr*)&client_addr, &addr_len);
         if (new_socket == -1) {
             perror("Accept failed");
@@ -435,7 +446,7 @@ void send_all_saved_doors_to_firealarm() {
     // Create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd == -1) {
-        printf("Could not create socket");
+        printf("Could not create socket\n");
         return;
     }
 
@@ -862,9 +873,11 @@ int main(int argc, char *argv[]) {
     shared_memory_path = argv[7];
     shared_memory_offset = atoi(argv[8]);
     // Initialize global data structures and mutexes
+    printf("Initializing global data");
     initialize_global_data();
 
     // Initialize TCP and UDP servers
+    printf("Initialize TCP and UDP servers");
     int tcp_sockfd = init_tcp_server(address_port);
     int udp_sockfd = init_udp_server(address_port);
 
@@ -874,6 +887,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Create threads for TCP and UDP servers
+    printf("Create threads TCP and UDP servers");
     pthread_t tcp_thread, udp_thread;
     pthread_create(&tcp_thread, NULL, tcp_server_thread, &tcp_sockfd);
     pthread_create(&udp_thread, NULL, udp_server_thread, &udp_sockfd);
