@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 
 #define MAX_DOORS 50
 #define MAX_CARD_READERS 50
@@ -34,6 +35,21 @@ typedef struct {
     char address[50];
     int port;
 } Simulator;
+
+typedef struct {
+    int temp;
+    char id[50];
+    char address[50];
+    int port;
+} TempSensor;
+
+struct temperature_entry {
+    struct in_addr sensor_addr;
+    in_port_t sensor_port;
+    struct timeval timestamp;
+    float temperature;
+};
+
 /**
  * Initialize the overseer listening on the specified port.
  * @param port The port to listen on.
@@ -94,4 +110,20 @@ void send_all_saved_doors_to_firealarm();
 void send_door_to_fire_alarm(Door door);
 
 int is_fire_alarm_registered();
+
+void handle_scanned_message(int client_socket, char* message);
+
+char* lookup_authorisation(const char* scanned_code);
+
+int lookup_door_id(int card_reader_id);
+
+int has_access(const char* access_data, int door_id);
+
+void send_command_to_door(char* door_id, char* command);
+
+void list_doors();
+
+void open_door(char* door_id);
+
+void close_door(char* door_id);
 #endif // OVERSEER_H
