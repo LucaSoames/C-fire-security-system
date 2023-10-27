@@ -41,7 +41,6 @@ struct SharedMemory shared_memory = {
     PTHREAD_COND_INITIALIZER, 
 };
 
-
 int init_overseer(int port) {
     int sockfd;
     struct sockaddr_in server_addr;
@@ -166,8 +165,14 @@ void* tcp_server_thread(void* arg) {
         }
         buffer[total_bytes_read] = '\0'; 
 
-        if (strstr(buffer, "SCANNED") != NULL) { // check if the message contains "SCANNED"
-            handle_scanned_message(new_socket, buffer);
+        if (strstr(buffer, "SCANNED") != NULL) {
+            ThreadArgs* args = malloc(sizeof(ThreadArgs));
+            args->socket = new_socket;
+            strncpy(args->message, buffer, sizeof(buffer));
+
+            pthread_t tid;
+            pthread_create(&tid, NULL, handle_scanned_message_thread, args);
+            pthread_detach(tid); 
         } else if (total_bytes_read > 0) {
             register_device(buffer);
         }
@@ -207,21 +212,70 @@ void handle_scanned_message(int client_socket, char* message) {
         return;
     }
 
-    // Check if the scanned code has access to the door ID
-    char door_id_str[50]; // Ensure the buffer is large enough for the int and null terminator
+       char door_id_str[50]; // Ensure the buffer is large enough for the int and null terminator
     sprintf(door_id_str, "%d", door_id);
     if (has_access(access_list, door_id)) {
         // Send the ALLOWED message
         send(client_socket, "ALLOWED#", 8, 0);
         close(client_socket);
 
-        // Connect to the door controller
+        // Connect to the door controller and send OPEN# command
         send_command_to_door(door_id_str, "OPEN#");
-        // TODO: Add logic to wait for OPENING# and OPENED# responses, then send CLOSE# after {door open duration} microseconds
+        
+        int door_socket = get_door_sockfd(door_id_str);
+
+        char response[1024];
+        recv(door_socket, response, sizeof(response), 0);
+        if (strncmp(response, "OPENING#", 8) == 0) {
+            memset(response, 0, sizeof(response)); // Clear the buffer
+            recv(door_socket, response, sizeof(response), 0);
+            if (strncmp(response, "OPENED#", 7) == 0) {
+                close(door_socket);
+                
+                usleep(door_open_duration); // Wait for {door open duration} microseconds
+                
+                send_command_to_door(door_id_str, "CLOSE#");
+                close(door_socket);
+            }
+        }
     } else {
         // Access is denied
         send_command_to_door(door_id_str, "DENIED#");
     }
+}
+
+int get_door_sockfd(const char* door_id) {
+    struct sockaddr_in door_address;
+    int sockfd;
+    
+    // Search for the door by id
+    for (int i = 0; strlen(doors[i].id) > 0; i++) {  // Use the actual number of doors here
+        if (strcmp(doors[i].id, door_id) == 0) {
+            // Found the door, now create the socket
+            sockfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (sockfd == -1) {
+                perror("Could not create socket");
+                return -1;
+            }
+
+            door_address.sin_family = AF_INET;
+            door_address.sin_addr.s_addr = inet_addr(doors[i].address);
+            door_address.sin_port = htons(doors[i].port);
+
+            // Connect to the door (assuming it's a TCP connection)
+            if (connect(sockfd, (struct sockaddr *)&door_address, sizeof(door_address)) < 0) {
+                perror("Connection failed");
+                close(sockfd);
+                return -1;
+            }
+
+            return sockfd;
+        }
+    }
+
+    // If here, door not found
+    printf("Door with id %s not found.\n", door_id);
+    return -1;
 }
 
 char* lookup_authorisation(const char* scanned_code) {
@@ -369,38 +423,67 @@ int is_fire_alarm_registered() {
 void send_all_saved_doors_to_firealarm() {
     int sockfd;
     struct sockaddr_in fire_alarm_addr;
-    char message[1024];
+    fd_set readfds;
+    struct timeval tv;
 
     struct {
         char header[4];
         struct in_addr door_addr;
         in_port_t door_port;
-    } door_datagram;
-    //create socket
+    } door_datagram, confirmation_datagram;
+
+    // Create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd == -1) {
         printf("Could not create socket");
         return;
     }
 
-
-    //prepare the sockaddr_in structure for the fire alarm system
+    // Prepare the sockaddr_in structure for the fire alarm system
     fire_alarm_addr.sin_family = AF_INET;
-    fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); //assuming fire alarm system IP address
-    fire_alarm_addr.sin_port = htons(8888); //assuming fire alarm system port
+    fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // assuming fire alarm system IP address
+    fire_alarm_addr.sin_port = htons(8888); // assuming fire alarm system port
 
     for (int i = 0; strlen(doors[i].id) > 0; i++) {
         if (strncmp(doors[i].type, "FAIL_SAFE", 9) == 0) {
-            door_datagram.header[0] = 'D';
-            door_datagram.header[1] = 'O';
-            door_datagram.header[2] = 'O';
-            door_datagram.header[3] = 'R';
+            strcpy(door_datagram.header, "DOOR");
             inet_aton(doors[i].address, &door_datagram.door_addr);
             door_datagram.door_port = doors[i].port;
-            //send door data to the fire alarm system
-            if (sendto(sockfd, message, strlen(message), 0, (struct sockaddr *)&fire_alarm_addr, sizeof(fire_alarm_addr)) < 0) {
-                puts("Send failed");
-                return;
+
+            int sent = 0;
+            int retries = 3; // Adjust based on desired retries
+
+            while (retries > 0) {
+                // Send door data to the fire alarm system
+                if (sendto(sockfd, &door_datagram, sizeof(door_datagram), 0, (struct sockaddr *)&fire_alarm_addr, sizeof(fire_alarm_addr)) < 0) {
+                    puts("Send failed");
+                    return;
+                }
+
+                // Initialize select parameters
+                FD_ZERO(&readfds);
+                FD_SET(sockfd, &readfds);
+                tv.tv_sec = 0;
+                tv.tv_usec = datagram_resend_delay;
+
+                int retval = select(sockfd + 1, &readfds, NULL, NULL, &tv);
+                if (retval == -1) {
+                    perror("select()");
+                    return;
+                } else if (retval) {
+                    ssize_t len = recvfrom(sockfd, &confirmation_datagram, sizeof(confirmation_datagram), 0, NULL, NULL);
+                    if (len > 0 && strncmp(confirmation_datagram.header, "DREG", 4) == 0 &&
+                        confirmation_datagram.door_addr.s_addr == door_datagram.door_addr.s_addr &&
+                        confirmation_datagram.door_port == door_datagram.door_port) {
+                        sent = 1;
+                        break;
+                    }
+                }
+                retries--;
+            }
+
+            if (!sent) {
+                printf("Failed to get confirmation for door with ID %s after multiple attempts.\n", doors[i].id);
             }
         }
     }
@@ -409,43 +492,85 @@ void send_all_saved_doors_to_firealarm() {
 }
 
 void send_door_to_fire_alarm(Door door) {
-       int sockfd;
+    int sockfd;
     struct sockaddr_in fire_alarm_addr;
     char message[1024];
+    fd_set readfds;
+    struct timeval tv;
 
     struct {
         char header[4];
         struct in_addr door_addr;
         in_port_t door_port;
-    } door_datagram;
-    //create socket
+    } door_datagram, confirmation_datagram;
+
+    // Create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd == -1) {
         printf("Could not create socket");
         return;
     }
 
-
-    //prepare the sockaddr_in structure for the fire alarm system
+    // Prepare the sockaddr_in structure for the fire alarm system
     fire_alarm_addr.sin_family = AF_INET;
-    fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); //assuming fire alarm system IP address
-    fire_alarm_addr.sin_port = htons(8888); //assuming fire alarm system port
+    fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // assuming fire alarm system IP address
+    fire_alarm_addr.sin_port = htons(8888); // assuming fire alarm system port
 
-    door_datagram.header[0] = 'D';
-    door_datagram.header[1] = 'O';
-    door_datagram.header[2] = 'O';
-    door_datagram.header[3] = 'R';
+    // Initialize the door_datagram
+    strcpy(door_datagram.header, "DOOR");
     inet_aton(door.address, &door_datagram.door_addr);
     door_datagram.door_port = door.port;
-    //send door data to the fire alarm system
-    if (sendto(sockfd, message, strlen(message), 0, (struct sockaddr *)&fire_alarm_addr, sizeof(fire_alarm_addr)) < 0) {
-        puts("Send failed");
-        return;
+
+    int sent = 0;
+    int retries = 3; // You can adjust this number based on how many retries you want.
+    while (retries > 0) {
+        // Send door data to the fire alarm system
+        if (sendto(sockfd, &door_datagram, sizeof(door_datagram), 0, (struct sockaddr *)&fire_alarm_addr, sizeof(fire_alarm_addr)) < 0) {
+            puts("Send failed");
+            return;
+        }
+
+        // Initialize select parameters
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = datagram_resend_delay; // assuming datagram_resend_delay is globally defined
+
+        // Waiting for a response for the given delay
+        int retval = select(sockfd + 1, &readfds, NULL, NULL, &tv);
+
+        if (retval == -1) {
+            perror("select()");
+            return;
+        } else if (retval) {
+            // Data is available now
+            ssize_t len = recvfrom(sockfd, &confirmation_datagram, sizeof(confirmation_datagram), 0, NULL, NULL);
+            if (len > 0 && strncmp(confirmation_datagram.header, "DREG", 4) == 0 &&
+                confirmation_datagram.door_addr.s_addr == door_datagram.door_addr.s_addr &&
+                confirmation_datagram.door_port == door_datagram.door_port) {
+                sent = 1;
+                break;
+            }
+        }
+        retries--;
     }
+
+    if (!sent) {
+        puts("Failed to get confirmation after multiple attempts.");
+    }
+
+    close(sockfd);
+}
+
+void* handle_scanned_message_thread(void* arg) {
+    ThreadArgs* thread_args = (ThreadArgs*) arg;
+    handle_scanned_message(thread_args->socket, thread_args->message);
+    free(thread_args);  // Important to free allocated memory
+    pthread_exit(NULL); // Properly exit thread when done
 }
 
 int find_or_add_door(Door new_door) {
-    for (int i = 0; i < MAX_DOORS; i++) {
+    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
         // Check if door with this ID already exists
         if (strcmp(doors[i].id, new_door.id) == 0) {
             doors[i] = new_door; // Update existing
@@ -453,7 +578,7 @@ int find_or_add_door(Door new_door) {
         }
     }
 
-    for (int i = 0; i < MAX_DOORS; i++) {
+    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
         if (strlen(doors[i].id) == 0) { // Empty slot
             doors[i] = new_door; // Add new
             return i;
@@ -533,10 +658,10 @@ void manual_access() {
     int running = 1;
 
     while (running) {
-        printf("Enter command (or 'exit' to quit): ");
+        printf("Enter command (or 'EXIT' to quit): ");
         fgets(command, sizeof(command), stdin);
 
-        // Remove newline character
+        //remove newline character
         size_t len = strlen(command);
         if (len > 0 && command[len-1] == '\n') {
             command[len-1] = '\0';
@@ -555,7 +680,16 @@ void manual_access() {
             sscanf(command, "DOOR CLOSE %s", door_id);
             close_door(door_id);
         } 
-        else if (strcmp(command, "exit") == 0) {
+        else if (strcmp(command, "FIRE ALARM") == 0) {
+            while (1) {
+                send_udp_datagram_to_fire_alarm_unit(); 
+                usleep(datagram_resend_delay);
+            }
+        }
+        else if (strcmp(command, "SECURITY ALARM") == 0) {
+            raise_security_alarm();
+        }
+        else if (strcmp(command, "EXIT") == 0) {
             running = 0;
         } 
         else {
@@ -567,7 +701,7 @@ void manual_access() {
 void list_doors() {
     printf("List of Doors:\n");
     printf("ID\tIP Address\tPort\tType\n");
-    for (int i = 0; i < MAX_DOORS; i++) {
+    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
         printf("%s\t%s\t%d\t%s\n", doors[i].id, doors[i].address, doors[i].port, doors[i].type);
     }
 }
@@ -630,7 +764,7 @@ void process_received_message(char* msg, char* source_address, int source_port) 
 }
 
 void send_command_to_door(char* door_id, char* command) {
-    for (int i = 0; i < MAX_DOORS; i++) {
+    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
         if (strcmp(doors[i].id, door_id) == 0) {
             // Assume send_tcp_message() is a function that sends a TCP message to a specific address and port
             send_tcp_message(doors[i].address, doors[i].port, command);
@@ -638,6 +772,37 @@ void send_command_to_door(char* door_id, char* command) {
         }
     }
     fprintf(stderr, "Error: Door not found.\n");
+}
+
+void send_udp_datagram_to_fire_alarm_unit() {
+    int sockfd;
+    struct sockaddr_in servaddr;
+    char datagram[] = {'F', 'I', 'R', 'E'};
+
+    // Create socket
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd == -1) {
+        perror("Socket creation failed");
+        return;
+    }
+
+    memset(&servaddr, 0, sizeof(servaddr));
+
+    // Iterate through all fire alarms and send the datagram
+    for (int i = 0; i < MAX_FIRE_ALARMS; i++) {
+        // If the fire alarm ID is empty, it's likely the end of the registered alarms
+        if (strlen(fireAlarms[i].id) == 0) {
+            break;
+        }
+
+        servaddr.sin_family = AF_INET;
+        servaddr.sin_port = htons(fireAlarms[i].port);
+        inet_pton(AF_INET, fireAlarms[i].address, &(servaddr.sin_addr));
+
+        sendto(sockfd, datagram, sizeof(datagram), 0, (struct sockaddr*)&servaddr, sizeof(servaddr));
+    }
+
+    close(sockfd);
 }
 
 void raise_security_alarm() {
@@ -654,7 +819,7 @@ void raise_security_alarm() {
     pthread_cond_signal(&shared_memory.cond);
 
     // Loop through every FAIL_SECURE door
-    for (int i = 0; i < MAX_DOORS; i++) {
+    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
         if (strcmp(doors[i].type, "FAIL_SECURE") == 0) {
             send_tcp_message(doors[i].address, doors[i].port, "CLOSE_SECURE#");
         }

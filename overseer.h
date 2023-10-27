@@ -10,6 +10,10 @@
 #define MAX_CARD_READERS 50
 #define PORT 8080
 
+typedef struct {
+    int socket;
+    char message[1024];
+} ThreadArgs;
 
 typedef struct {
     char id[50];
@@ -126,4 +130,12 @@ void list_doors();
 void open_door(char* door_id);
 
 void close_door(char* door_id);
+
+void* handle_scanned_message_thread(void* arg);
+
+int get_door_sockfd(const char* door_id);
+
+void send_udp_datagram_to_fire_alarm_unit();
+
+void raise_security_alarm();
 #endif // OVERSEER_H
