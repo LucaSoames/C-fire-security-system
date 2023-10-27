@@ -42,6 +42,7 @@ typedef struct {
 
 typedef struct {
     int temp;
+    struct timeval timestamp;
     char id[50];
     char address[50];
     int port;
@@ -52,6 +53,20 @@ struct temperature_entry {
     in_port_t sensor_port;
     struct timeval timestamp;
     float temperature;
+};
+
+struct addr_entry {
+    struct in_addr sensor_addr;
+    in_port_t sensor_port;
+};
+
+struct datagram_format {
+    char header[4]; // {'T', 'E', 'M', 'P'}
+    struct timeval timestamp;
+    float temperature;
+    uint16_t id;
+    uint8_t address_count;
+    struct addr_entry address_list[50];
 };
 
 /**
@@ -138,4 +153,8 @@ int get_door_sockfd(const char* door_id);
 void send_udp_datagram_to_fire_alarm_unit();
 
 void raise_security_alarm();
+
+void update_temperature(struct datagram_format *datagram);
+
+void display_temperature_sensors();
 #endif // OVERSEER_H

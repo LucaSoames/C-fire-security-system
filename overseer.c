@@ -689,6 +689,9 @@ void manual_access() {
         else if (strcmp(command, "SECURITY ALARM") == 0) {
             raise_security_alarm();
         }
+        else if (strcmp(command, "TEMPSENSOR LIST") == 0) {
+            display_temperature_sensors();
+        }
         else if (strcmp(command, "EXIT") == 0) {
             running = 0;
         } 
@@ -715,43 +718,46 @@ void close_door(char* door_id) {
 }
 
 void process_udp_message(char* msg) {
-    // struct temperature_entry *incoming_datagram = (struct temperature_entry *)msg;
+    struct datagram_format datagram;
+    memcpy(&datagram, msg, sizeof(datagram));
+    update_temperature(&datagram);
 
-    // // Check if the message is a temperature update
-    // if (strncmp(incoming_datagram->header, "TEMP", 4) == 0) {
-    //     // Find if this sensor's data already exists in the database
-    //     int found = -1;
-    //     for (int i = 0; i < MAX_SENSORS; i++) {
-    //         if (temperature_db[i].sensor_addr.s_addr == incoming_datagram->address_list[0].sensor_addr.s_addr &&
-    //             temperature_db[i].sensor_port == incoming_datagram->address_list[0].sensor_port) {
-    //             found = i;
-    //             break;
-    //         }
-    //     }
+}
 
-    //     // If the sensor is not found, find an empty slot for it
-    //     if (found == -1) {
-    //         for (int i = 0; i < MAX_SENSORS; i++) {
-    //             if (temperature_db[i].sensor_addr.s_addr == 0 && temperature_db[i].sensor_port == 0) {
-    //                 found = i;
-    //                 break;
-    //             }
-    //         }
-    //     }
+void update_temperature(struct datagram_format *datagram) {
+    for (int i = 0; i < datagram->address_count; i++) {
+        char address[50];
+        int port = ntohs(datagram->address_list[i].sensor_port);
+        inet_ntop(AF_INET, &datagram->address_list[i].sensor_addr, address, sizeof(address));
+        
+        // Find the matching sensor or an empty slot
+        int j;
+        for (j = 0; j < MAX_TEMPSENSORS; j++) {
+            if (strcmp(tempSensors[j].address, address) == 0 && tempSensors[j].port == port) {
+                if (timercmp(&datagram->timestamp, &tempSensors[j].timestamp, >)) {
+                    tempSensors[j].temp = datagram->temperature;
+                    tempSensors[j].timestamp = datagram->timestamp;
+                }
+                break;
+            } else if (strlen(tempSensors[j].id) == 0) {  // Empty slot
+                strncpy(tempSensors[j].id, (char *)&datagram->id, sizeof(tempSensors[j].id));
+                strncpy(tempSensors[j].address, address, sizeof(tempSensors[j].address));
+                tempSensors[j].port = port;
+                tempSensors[j].temp = datagram->temperature;
+                tempSensors[j].timestamp = datagram->timestamp;
+                break;
+            }
+        }
+    }
+}
 
-    //     // Update the database with new temperature data
-    //     if (found != -1) {
-    //         if (timercmp(&incoming_datagram->timestamp, &temperature_db[found].timestamp, >)) {
-    //             temperature_db[found].sensor_addr = incoming_datagram->address_list[0].sensor_addr;
-    //             temperature_db[found].sensor_port = incoming_datagram->address_list[0].sensor_port;
-    //             temperature_db[found].timestamp = incoming_datagram->timestamp;
-    //             temperature_db[found].temperature = incoming_datagram->temperature;
-    //         }
-    //     } else {
-    //         // Handle case where there's no space left in the temperature_db (or other error conditions)
-    //         printf("Temperature database full or other error occurred.\n");
-    //     }
-    // }
+void display_temperature_sensors() {
+    printf("Temperature Sensors:\n");
+    for (int i = 0; i < MAX_TEMPSENSORS && strlen(tempSensors[i].id) > 0; i++) {
+        printf("ID: %s, Address: %s, Port: %d, Temperature: %d°C, Timestamp: %ld.%06ld\n",
+               tempSensors[i].id, tempSensors[i].address, tempSensors[i].port,
+               tempSensors[i].temp, tempSensors[i].timestamp.tv_sec, tempSensors[i].timestamp.tv_usec);
+    }
 }
 
 void process_received_message(char* msg, char* source_address, int source_port) {
