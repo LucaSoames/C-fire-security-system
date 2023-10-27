@@ -194,7 +194,7 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
         exit(1);
         
     } else if (pid == 0) { // Child process
-
+        
         usleep(250000); // 250 milliseconds
 
         for (i = 1; i < component_count; i++) {
@@ -218,36 +218,52 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
                     firealarm_boot_count ++;
                     strcpy(firealarm_address_port, address_port);
                     size_t shm_offset = offsetof(SharedMemory, firealarmMemoryArray[firealarm_boot_count]);
-                    execl("./firealarm.o", address_port, components[i].config[0], components[i].config[1], components[i].config[2], NULL, sharedMemory, (int)shm_offset, overseer_address_port, (char *) NULL);
-                    break;
+                    char shm_offset_str[20];
+                    sprintf(shm_offset_str, "%zu", shm_offset);
+                    execl("./firealarm", address_port, components[i].config[0], components[i].config[1], components[i].config[2], NULL, sharedMemory, shm_offset_str, overseer_address_port, (char *) NULL);
+                    fprintf(stderr, "Fire alarm execl failed");
+                    exit(1);
 
                 } else if (strcmp(components[i].type, "cardreader") == 0) {
                 
                     cardreader_boot_count ++;
                     size_t shm_offset = offsetof(SharedMemory, cardreaderMemoryArray[cardreader_boot_count]);
-                    execl("./cardreader.o", components[i].config[0], components[i].config[1], components[i].config[2], sharedMemory, (int)shm_offset, overseer_address_port, (char *) NULL);
-                    break;
+                    char shm_offset_str[20];
+                    sprintf(shm_offset_str, "%zu", shm_offset);
+
+                    execl("./cardreader", components[i].config[0], components[i].config[1], components[i].config[2], sharedMemory, shm_offset_str, overseer_address_port, (char *) 0);
+                    fprintf(stderr, "Cardreader execl failed");
+                    exit(1);
 
                 } else if (strcmp(components[i].type, "door") == 0) {
 
                     door_boot_count ++;
                     size_t shm_offset = offsetof(SharedMemory, doorMemoryArray[door_boot_count]);
-                    execl("./door.o", components[i].config[0], address_port, components[i].config[1], sharedMemory, (int)shm_offset, overseer_address_port, (char *) NULL);
-                    break;
+                    char shm_offset_str[20];
+                    sprintf(shm_offset_str, "%zu", shm_offset);
+                    execl("./door", components[i].config[0], address_port, components[i].config[1], sharedMemory, shm_offset_str, overseer_address_port, (char *) NULL);
+                    fprintf(stderr, "Door execl failed");
+                    exit(1);
                 
                 } else if (strcmp(components[i].type, "callpoint") == 0) {
                 
                     callpoint_boot_count ++;
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
-                    execl("./callpoint.o", components[i].config[1], sharedMemory, (int)shm_offset, firealarm_address_port, (char *) NULL);
-                    break;
+                    char shm_offset_str[20];
+                    sprintf(shm_offset_str, "%zu", shm_offset);
+                    execl("./callpoint", components[i].config[1], sharedMemory, shm_offset_str, firealarm_address_port, (char *) NULL);
+                    fprintf(stderr, "Callpoint execl failed");
+                    exit(1);
 
                 } else if (strcmp(components[i].type, "tempsensor") == 0) {
                 
                     callpoint_boot_count ++;
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
-                    execl("./callpoint.o", components[i].config[0], address_port, components[i].config[1], components[i].config[2], sharedMemory, (int)shm_offset, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
-                    break;
+                    char shm_offset_str[20];
+                    sprintf(shm_offset_str, "%zu", shm_offset);
+                    execl("./tempsensor", components[i].config[0], address_port, components[i].config[1], components[i].config[2], sharedMemory, shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
+                    fprintf(stderr, "Temperature sensor execl failed");
+                    exit(1);
 
                 } else {
                 printf("Unknown component type: %s\n", components[i].type);
@@ -272,9 +288,8 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
 
             size_t shm_offset = offsetof(SharedMemory, overseerMemoryArray[overseer_boot_count]);
         
-
-            execl("./overseer.o", overseer_address_port, components[0].config[0], components[0].config[1], "authorisation.txt", "connections.txt", "layout.txt", sharedMemory, (int) shm_offset, (char *) NULL); // Execute overseer
-            fprintf(stderr, "Execl failed");
+            execl("./overseer", overseer_address_port, components[0].config[0], components[0].config[1], "authorisation.txt", "connections.txt", "layout.txt", sharedMemory, (int) shm_offset, (char *) NULL); // Execute overseer
+            fprintf(stderr, "Overseer execl failed");
             exit(1);
         }   
 }
@@ -347,4 +362,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
