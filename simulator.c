@@ -8,8 +8,10 @@
 #include <signal.h>
 #include <string.h>
 #include <stddef.h>
+#include <fcntl.h>
 
 #define MAX_COMPONENTS 110
+#define FILE_LINE_MAX_LENGTH 100
 
 #define NUM_OF_OVERSEERS 1
 #define MAX_NUM_OF_FIREALARMS 1
@@ -17,6 +19,8 @@
 #define MAX_NUM_OF_DOORS 20
 #define MAX_NUM_OF_TEMPSENSORS 20
 #define MAX_NUM_OF_CALLPOINTS 20
+
+pthread_mutex_t lock; // Process spawning lock
 
 
 struct overseerMemory {
@@ -80,7 +84,7 @@ SharedMemory *sharedMemory;
 
 typedef struct { // Define a component
     char type[25];
-    char config[5][25];
+    char configArray[10][25];
 } Component;
 
 Component components[MAX_COMPONENTS]; // Array of components
@@ -89,49 +93,56 @@ int component_count = 0;
 
 void parse_file(FILE *scenario_file) { // Parse senario file into components array
 
-    char line[256]; // Line of scenario file
-    const char delim[] = " ";
-    char *token;
-    char **component_str = malloc(sizeof(char*));
+    char line[FILE_LINE_MAX_LENGTH]; // Line of file
 
     while (fgets(line, sizeof(line), scenario_file) && strncmp(line, "INIT", 4) == 0) { // Read lines starting with INIT
         
-        int word_count = 0;
+        const char delims[] = " \n";
+        char *token = strtok(line, delims); // Tokenise line
+        if (token != NULL) {
+            Component new_component; // Define new component
+            
 
-        token = strtok(line, delim); // Get the first token
+            int config_index = 0; // New component config
+            while ((token = strtok(NULL, delims)) != NULL && config_index < 10) {
+                if (config_index == 0) {
+                    strcpy(new_component.type, token); // New component type
+                } else if (config_index > 0) {
+                    strcpy(new_component.configArray[config_index], token); // New component configuration
+                }
+                
+                config_index++;
+            }
 
-        while (token != NULL) { // Create component string
-
-            component_str = realloc(component_str, (word_count + 1) * sizeof(char*)); // Resize
-            component_str[word_count] = malloc(strlen(token) + 1); // Allocate memory
-            strcpy(component_str[word_count], token); // Copy in
-
-            word_count++;
-            token = strtok(NULL, delim);
+            if (component_count < MAX_COMPONENTS) { // Add new component to component array
+                components[component_count] = new_component;
+                (component_count)++;
+            } else {
+                printf("Exceeded maximum number of components.\n"); // TO DELETE
+                break;
+            }
         }
-
-        strcpy(components[component_count].type, component_str[1]); // Extract component type
-        for (int i = 0; i < word_count - 2; i++) { // Remove first 2 words from component string
-            //component_str[i] = component_str[i + 2];
-            strcpy(components[component_count].config[word_count], component_str[i + 2]); // Extract component config
-        }
-          
-
-        component_count++; // Add new component
     }
-
-    free(component_str); // Free memory
 }
 
 
 void create_shared_memory() { // Map shm structure
 
-    sharedMemory = mmap(NULL, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    const char *name = "/shared_memory"; // Shared memory object name
 
-    if (sharedMemory == MAP_FAILED) { // Check mmap worked
+    int shm_fd = shm_open(name, O_CREAT | O_RDWR, 0666); // Create a shared memory object
+    if (shm_fd == -1) {
+        perror("shm_open");
+        exit(1);
+    }
+
+    ftruncate(shm_fd, sizeof(SharedMemory)); // Set the size of the shared memory segment
+    
+    sharedMemory = mmap(NULL, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, shm_fd, 0); // Map shm
+    if (sharedMemory == MAP_FAILED) {
         perror("mmap failed");
         exit(1);
-    }  
+    }
 }
 
 
@@ -178,7 +189,7 @@ void shared_memory_init() { // Initialise
 pid_t pids[MAX_COMPONENTS]; // Array of process IDs
 int overseer_boot_count = -1, firealarm_boot_count = -1, cardreader_boot_count = -1, door_boot_count = -1, tempsensor_boot_count = -1, callpoint_boot_count = -1; // start at 0
 
-void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure all processes actually run))
+void spawn_processes() { // SOME CHILD PROCESSES BROKEN
 
     int i;
     pid_t pid;
@@ -220,18 +231,19 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
                     size_t shm_offset = offsetof(SharedMemory, firealarmMemoryArray[firealarm_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./firealarm", address_port, components[i].config[0], components[i].config[1], components[i].config[2], NULL, sharedMemory, shm_offset_str, overseer_address_port, (char *) NULL);
+                    execl("./firealarm", address_port, components[i].configArray[0], components[i].configArray[1], components[i].configArray[2], NULL, "/dev/shm/shared_memory", shm_offset_str, "127.0.0.1:3000", (char *) NULL);
                     fprintf(stderr, "Fire alarm execl failed");
                     exit(1);
 
                 } else if (strcmp(components[i].type, "cardreader") == 0) {
                 
-                    cardreader_boot_count ++;
+                    cardreader_boot_count ++; // Boot new card reader
+
                     size_t shm_offset = offsetof(SharedMemory, cardreaderMemoryArray[cardreader_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
 
-                    execl("./cardreader", components[i].config[0], components[i].config[1], components[i].config[2], sharedMemory, shm_offset_str, overseer_address_port, (char *) 0);
+                    execl("./cardreader", components[i].configArray[1], components[i].configArray[2], "/dev/shm/shared_memory", shm_offset_str, "127.0.0.1:3000", (char *) 0);
                     fprintf(stderr, "Cardreader execl failed");
                     exit(1);
 
@@ -241,7 +253,7 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
                     size_t shm_offset = offsetof(SharedMemory, doorMemoryArray[door_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./door", components[i].config[0], address_port, components[i].config[1], sharedMemory, shm_offset_str, overseer_address_port, (char *) NULL);
+                    execl("./door", components[i].configArray[0], address_port, components[i].configArray[1], "/dev/shm/shared_memory", shm_offset_str, "127.0.0.1:3000", (char *) NULL);
                     fprintf(stderr, "Door execl failed");
                     exit(1);
                 
@@ -251,7 +263,7 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./callpoint", components[i].config[1], sharedMemory, shm_offset_str, firealarm_address_port, (char *) NULL);
+                    execl("./callpoint", components[i].configArray[1], "/dev/shm/shared_memory", shm_offset_str, firealarm_address_port, (char *) NULL); // Check firealarm_address_port is working
                     fprintf(stderr, "Callpoint execl failed");
                     exit(1);
 
@@ -261,7 +273,7 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./tempsensor", components[i].config[0], address_port, components[i].config[1], components[i].config[2], sharedMemory, shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
+                    execl("./tempsensor", components[i].configArray[0], address_port, components[i].configArray[1], components[i].configArray[2], "/dev/shm/shared_memory", shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
                     fprintf(stderr, "Temperature sensor execl failed");
                     exit(1);
 
@@ -275,22 +287,26 @@ void spawn_processes() { // (NEEDS ADJUSTING (I.E: child delay, and make sure al
         exit(0);
 
     } else { // Parent process
-
-            pids[0] = pid;
-
-            port_number ++;
-            overseer_boot_count ++;
-
-            strcpy(overseer_address_port, "127.0.0.1:");
-            char port_str[20];
-            sprintf(port_str, "%d", port_number);
-            strcat(overseer_address_port, port_str);
-
-            size_t shm_offset = offsetof(SharedMemory, overseerMemoryArray[overseer_boot_count]);
+            
+        pids[0] = pid;
+            
+        port_number ++;
+        overseer_boot_count ++;
         
-            execl("./overseer", overseer_address_port, components[0].config[0], components[0].config[1], "authorisation.txt", "connections.txt", "layout.txt", sharedMemory, (int) shm_offset, (char *) NULL); // Execute overseer
-            fprintf(stderr, "Overseer execl failed");
-            exit(1);
+        strcpy(overseer_address_port, "127.0.0.1:"); // Create address:port stringS
+        char port_str[20];
+        sprintf(port_str, "%d", port_number);
+        strcat(overseer_address_port, port_str);        
+
+        size_t shm_offset = offsetof(SharedMemory, overseerMemoryArray[overseer_boot_count]); // Calculate and cast offset to str
+        char *shm_offset_str = (char*)malloc(5 * sizeof(char));
+        snprintf(shm_offset_str, 5, "%zu", shm_offset);
+
+        execl("./overseer", overseer_address_port, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", "/dev/shm/shared_memory", shm_offset_str, (char *) NULL);
+        //execl("./overseer", overseer_address_port, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", "/dev/shm/shared_memory", shm_offset_str, (char *) NULL); // Execute overseer
+        fprintf(stderr, "Overseer execl failed");
+        free(shm_offset_str);
+        exit(1);
         }   
 }
 
@@ -327,8 +343,17 @@ void cleanup() {
         kill(pids[i], SIGTERM); // Send a termination signal
         waitpid(pids[i], NULL, 0); // Wait for child process to terminate
     }
-    // Unmap shared memory
-    munmap(sharedMemory, sizeof(SharedMemory));
+
+    // Unmap the shared memory
+    if (munmap(sharedMemory, sizeof(SharedMemory)) == -1) {
+        perror("munmap");
+        exit(1);
+    }
+
+    if (shm_unlink("/shared_memory") == -1) {
+        perror("shm_unlink");
+        exit(1);
+    }
 }
 
 
@@ -337,6 +362,11 @@ int main(int argc, char *argv[]) {
 
     if (argc != 2) { // Check if CLI arguments are valid
         printf("Usage: %s {scenario file}\n", argv[0]);
+        return 1;
+    }
+
+    if (pthread_mutex_init(&lock, NULL) != 0) { // Initialise mutex lock
+        printf("\nMutex initialization failed.\n");
         return 1;
     }
 
@@ -352,6 +382,10 @@ int main(int argc, char *argv[]) {
     create_shared_memory(); // Create shm structure
     shared_memory_init(); // Load shm init values
 
+    for (int i = 0; i < component_count; i++) {
+        printf("Component number %d has type %s\n", i, components[i].type);
+    }
+    
     spawn_processes();
 
     //simulate_scenario(scenario_file);
