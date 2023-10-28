@@ -136,7 +136,6 @@ void* udp_server_thread(void* arg) {
     }
 
     while (1) {
-        printf("UDP\n");
         char buffer[1024];
         socklen_t len = sizeof(client_addr);
         int n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&client_addr, &len);
@@ -155,7 +154,6 @@ void* tcp_server_thread(void* arg) {
     socklen_t addr_len = sizeof(client_addr);
 
     while (1) {
-        printf("TCP \n");
         new_socket = accept(sockfd, (struct sockaddr*)&client_addr, &addr_len);
         if (new_socket == -1) {
             perror("Accept failed");
@@ -378,19 +376,19 @@ void register_device(char* msg) {
 
         token = strtok(NULL, " ");
         if (token) strncpy(door.id, token, sizeof(door.id));
-        
+
         token = strtok(NULL, " ");
         if (token) {
-            char* address_token = strtok(token, ":");
-            if(address_token) strncpy(door.address, address_token, sizeof(door.address));
-            
-            char* port_token = strtok(NULL, ":");
-            if(port_token) door.port = atoi(port_token);
+            sscanf(token, "%[^:]:%d", door.address, &door.port);
         }
 
+        memset(door.type, 0, sizeof(door.type));        
         token = strtok(NULL, " ");
-        if (token) strncpy(door.type, token, sizeof(door.type));
-
+        if (token) {
+            strncpy(door.type, token, sizeof(door.type) - 1); 
+            door.type[sizeof(door.type) - 1] = '\0';  // Ensure null termination
+        }
+    
         pthread_mutex_lock(&shared_memory.mutex);
         find_or_add_door(door);
         if (is_fire_alarm_registered() && strncmp(door.type, "FAIL_SAFE", 9) == 0) {
@@ -581,7 +579,7 @@ void* handle_scanned_message_thread(void* arg) {
 }
 
 int find_or_add_door(Door new_door) {
-    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
+    for (int i = 0; strlen(doors[i].id) > 0; i++) {
         // Check if door with this ID already exists
         if (strcmp(doors[i].id, new_door.id) == 0) {
             doors[i] = new_door; // Update existing
@@ -589,7 +587,7 @@ int find_or_add_door(Door new_door) {
         }
     }
 
-    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
+    for (int i = 0; MAX_DOORS; i++) {
         if (strlen(doors[i].id) == 0) { // Empty slot
             doors[i] = new_door; // Add new
             return i;
@@ -715,8 +713,8 @@ void manual_access() {
 void list_doors() {
     printf("List of Doors:\n");
     printf("ID\tIP Address\tPort\tType\n");
-    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
-        printf("%s\t%s\t%d\t%s\n", doors[i].id, doors[i].address, doors[i].port, doors[i].type);
+    for (int i = 0; strlen(doors[i].id) > 0; i++) {
+        printf("%s\t%s\t%d\t%s \n", doors[i].id, doors[i].address, doors[i].port, doors[i].type);
     }
 }
 
@@ -781,7 +779,7 @@ void process_received_message(char* msg, char* source_address, int source_port) 
 }
 
 void send_command_to_door(char* door_id, char* command) {
-    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
+    for (int i = 0; strlen(doors[i].id) > 0; i++) {
         if (strcmp(doors[i].id, door_id) == 0) {
             // Assume send_tcp_message() is a function that sends a TCP message to a specific address and port
             send_tcp_message(doors[i].address, doors[i].port, command);
@@ -836,7 +834,7 @@ void raise_security_alarm() {
     pthread_cond_signal(&shared_memory.cond);
 
     // Loop through every FAIL_SECURE door
-    for (int i = 0; i < strlen(doors[i].id) > 0; i++) {
+    for (int i = 0; strlen(doors[i].id) > 0; i++) {
         if (strcmp(doors[i].type, "FAIL_SECURE") == 0) {
             send_tcp_message(doors[i].address, doors[i].port, "CLOSE_SECURE#");
         }
