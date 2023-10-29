@@ -141,7 +141,7 @@ void parse_file(FILE *scenario_file) { // Parse senario file into components arr
                 components[component_count] = new_component; // Add new component to component array
                 (component_count)++;
             } else {
-                printf("Exceeded maximum number of components.\n"); // TO DELETE
+                printf("Exceeded maximum number of components.\n");
                 break;
             }
         }
@@ -174,7 +174,6 @@ void parse_file(FILE *scenario_file) { // Parse senario file into components arr
                 break;
             }
         }
-
     }
 }
 
