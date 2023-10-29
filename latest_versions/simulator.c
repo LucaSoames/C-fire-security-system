@@ -11,7 +11,9 @@
 #include <fcntl.h>
 
 #define MAX_COMPONENTS 110
+#define MAX_EVENTS 1000
 #define FILE_LINE_MAX_LENGTH 100
+#define FILEPATH "/shm"
 
 #define NUM_OF_OVERSEERS 1
 #define MAX_NUM_OF_FIREALARMS 1
@@ -21,7 +23,6 @@
 #define MAX_NUM_OF_CALLPOINTS 20
 
 pthread_mutex_t lock; // Process spawning lock
-const char *shm_path = "/shm"; // Shared memory path
 
 
 struct overseerMemory {
@@ -91,12 +92,20 @@ typedef struct { // Define a component
 Component components[MAX_COMPONENTS]; // Array of components
 int component_count = 0;
 
+typedef struct { // Define an event
+    char type[25];
+    char configArray[6][25];
+} Event;
+
+Event events[MAX_EVENTS]; // Array of events
+int event_count = 0;
+
 
 void parse_file(FILE *scenario_file) { // Parse senario file into components array
 
     char line[FILE_LINE_MAX_LENGTH]; // Line of file
 
-    while (fgets(line, sizeof(line), scenario_file) && strncmp(line, "INIT", 4) == 0) { // Read lines starting with INIT
+    while (fgets(line, sizeof(line), scenario_file) && strncmp(line, "INIT", 4) == 0) { // Pare initialisation
         
         const char delims[] = " \n";
         char *token = strtok(line, delims); // Tokenise line
@@ -109,14 +118,14 @@ void parse_file(FILE *scenario_file) { // Parse senario file into components arr
                 if (config_index == 0) {
                     strcpy(new_component.type, token); // New component type
                 } else if (config_index > 0) {
-                    strcpy(new_component.configArray[config_index], token); // New component configuration
+                    strcpy(new_component.configArray[config_index], token); // New component config element
                 }
                 
                 config_index++;
             }
 
-            if (component_count < MAX_COMPONENTS) { // Add new component to component array
-                components[component_count] = new_component;
+            if (component_count < MAX_COMPONENTS) { 
+                components[component_count] = new_component; // Add new component to component array
                 (component_count)++;
             } else {
                 printf("Exceeded maximum number of components.\n"); // TO DELETE
@@ -124,14 +133,42 @@ void parse_file(FILE *scenario_file) { // Parse senario file into components arr
             }
         }
     }
+    while (fgets(line, sizeof(line), scenario_file) && strncmp(line, "SCENARIO", 7) != 0) { // Parse events
+
+        const char delims[] = " \n";
+        char *token = strtok(line, delims); // Tokenise line
+        if (token != NULL) {
+            Event new_event; // Define new event
+
+            strcpy(new_event.configArray[0], token); // Event timestamp
+
+            int config_index = 1; // New event config
+            while ((token = strtok(NULL, delims)) != NULL && config_index < 6) {
+                if (config_index == 1) {
+                    strcpy(new_event.type, token); // New event type
+                } else if (config_index > 1) {
+                    strcpy(new_event.configArray[config_index], token); // New event config element
+                }
+                
+                config_index++;
+            }
+
+            if (event_count < MAX_EVENTS) { 
+                events[event_count] = new_event; // Add new event to event array
+                (event_count)++;
+            } else {
+                printf("Exceeded maximum number of events.\n"); // TO DELETE
+                break;
+            }
+        }
+
+    }
 }
 
 
 void create_shared_memory() { // Map shm structure
 
-    const char *name = "/shared_memory"; // Shared memory object name
-
-    int shm_fd = shm_open(name, O_CREAT | O_RDWR, 0666); // Create a shared memory object
+    int shm_fd = shm_open(FILEPATH, O_CREAT | O_RDWR, 0666); // Create a shared memory object
     if (shm_fd == -1) {
         perror("shm_open");
         exit(1);
@@ -139,7 +176,7 @@ void create_shared_memory() { // Map shm structure
 
     ftruncate(shm_fd, sizeof(SharedMemory)); // Set the size of the shared memory segment
     
-    sharedMemory = mmap(NULL, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, shm_fd, 0); // Map shm
+    sharedMemory = mmap(0, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, shm_fd, 0); // Map shm
     if (sharedMemory == MAP_FAILED) {
         perror("mmap failed");
         exit(1);
@@ -232,7 +269,7 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
                     size_t shm_offset = offsetof(SharedMemory, firealarmMemoryArray[firealarm_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./firealarm", "firealarm", address_port, components[i].configArray[0], components[i].configArray[1], components[i].configArray[2], NULL, shm_path, shm_offset_str, "127.0.0.1:3000", (char *) NULL);
+                    execl("./firealarm", "firealarm", address_port, components[i].configArray[0], components[i].configArray[1], components[i].configArray[2], NULL, FILEPATH, shm_offset_str, "127.0.0.1:3000", (char *) NULL);
                     fprintf(stderr, "Fire alarm execl failed");
                     exit(1);
 
@@ -244,7 +281,7 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
 
-                    execl("./cardreader", "cardreader", components[i].configArray[1], components[i].configArray[2], shm_path, shm_offset_str, "127.0.0.1:3000", (char *) 0);
+                    execl("./cardreader", "cardreader", components[i].configArray[1], components[i].configArray[2], FILEPATH, shm_offset_str, "127.0.0.1:3000", (char *) 0);
                     fprintf(stderr, "Cardreader execl failed");
                     exit(1);
 
@@ -254,7 +291,7 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
                     size_t shm_offset = offsetof(SharedMemory, doorMemoryArray[door_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./door", "door", components[i].configArray[0], address_port, components[i].configArray[1], shm_path, shm_offset_str, "127.0.0.1:3000", (char *) NULL);
+                    execl("./door", "door", components[i].configArray[0], address_port, components[i].configArray[1], FILEPATH, shm_offset_str, "127.0.0.1:3000", (char *) NULL);
                     fprintf(stderr, "Door execl failed");
                     exit(1);
                 
@@ -264,7 +301,7 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./callpoint", "callpoint", components[i].configArray[1], shm_path, shm_offset_str, firealarm_address_port, (char *) NULL); // Check firealarm_address_port is working
+                    execl("./callpoint", "callpoint", components[i].configArray[1], FILEPATH, shm_offset_str, firealarm_address_port, (char *) NULL); // Check firealarm_address_port is working
                     fprintf(stderr, "Callpoint execl failed");
                     exit(1);
 
@@ -274,7 +311,7 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
                     char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./tempsensor", "tempsensor", components[i].configArray[0], address_port, components[i].configArray[1], components[i].configArray[2], shm_path, shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
+                    execl("./tempsensor", "tempsensor", components[i].configArray[0], address_port, components[i].configArray[1], components[i].configArray[2], FILEPATH, shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
                     fprintf(stderr, "Temperature sensor execl failed");
                     exit(1);
 
@@ -303,15 +340,42 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
         char *shm_offset_str = (char*)malloc(5 * sizeof(char));
         snprintf(shm_offset_str, 5, "%zu", shm_offset);
 
-        execl("./overseer", "overseer", overseer_address_port, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", shm_path, shm_offset_str, (char *) NULL);
-        //execl("./overseer", overseer_address_port, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", "/dev/shm/shared_memory", shm_offset_str, (char *) NULL); // Execute overseer
+        execl("./overseer", "overseer", overseer_address_port, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", FILEPATH, shm_offset_str, (char *) NULL);
         fprintf(stderr, "Overseer execl failed");
         free(shm_offset_str);
         exit(1);
         }   
 }
 
-/*void simulate_scenario(FILE *scenario_file) {
+void simulate_events(FILE *scenario_file) {
+
+    for (int i = 0; i < event_count; i++) {
+        if (strcmp(events[i].type, "CARD_SCAN") == 0) {
+            
+            printf("EVENT %d: CARD_SCAN", i);
+            
+            int num = atoi(events[i].configArray[2]); // which cardreader?
+
+            pthread_mutex_lock(&sharedMemory->cardreaderMemoryArray[num].mutex); // mutex lock
+
+            strcpy(sharedMemory->cardreaderMemoryArray[num].scanned, events[i].configArray[3]); // Update scanned
+
+            pthread_mutex_unlock(&sharedMemory->cardreaderMemoryArray[num].mutex);// mutex unlock
+
+            pthread_cond_signal(&(sharedMemory->cardreaderMemoryArray[num].response_cond)); // update scanned_cond
+
+        } else if (strcmp(events[i].type, "CALLPOINT_TRIGGER") == 0) {
+
+            printf("EVENT %d: CALLPOINT_TRIGGER", i);
+
+        } else if (strcmp(events[i].type, "TEMP_CHANGE") == 0) {
+
+            printf("EVENT %d: TEMP_CHANGE", i);
+
+        }
+    }
+
+    /*
     char line[256];
     char component[10];
     char action[20];
@@ -337,7 +401,8 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
             // You can extend this to handle communication and other components
         }
     }
-}*/
+    */
+}
 
 void cleanup() {
     for (int i = 0; i < component_count; i++) {
@@ -378,13 +443,13 @@ int main(int argc, char *argv[]) {
     create_shared_memory(); // Create shm structure
     shared_memory_init(); // Load shm init values
 
-    for (int i = 0; i < component_count; i++) {
-        printf("Component number %d has type %s\n", i, components[i].type);
-    }
+    //for (int i = 0; i < event_count; i++) {
+    //    printf("Event number %d has type %s\n", i, events[i].type);
+    //}
     
     spawn_processes();
 
-    //simulate_scenario(scenario_file);
+    simulate_events(scenario_file);
 
     cleanup();
 
