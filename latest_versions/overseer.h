@@ -140,6 +140,8 @@ int has_access(const char* access_data, int door_id);
 
 void send_command_to_door(char* door_id, char* command);
 
+void send_command_to_reader(char* reader_id, char* command);
+
 void list_doors();
 
 void open_door(char* door_id);

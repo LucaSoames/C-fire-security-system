@@ -176,6 +176,12 @@ void* tcp_server_thread(void* arg) {
 
         if (strstr(buffer, "SCANNED") != NULL) {
             ThreadArgs* args = malloc(sizeof(ThreadArgs));
+            // int new_socket_duplicate = dup(new_socket); // Duplicating the socket descriptor
+            // if(new_socket_duplicate == -1) {
+            //     perror("ERROR duplicating socket");
+            //     close(new_socket);
+            //     continue;
+            // }
             args->socket = new_socket;
             strncpy(args->message, buffer, sizeof(buffer));
 
@@ -192,54 +198,42 @@ void* tcp_server_thread(void* arg) {
 }
 // A basic structure for the function:
 
-void handle_scanned_message(int client_socket, char* message) {
-    // Assuming message is of the form: 'CARDREADER {id} SCANNED {scanned}#'
-
-    // Extract card reader ID and scanned code from the message
-    char* token = strtok(message, " "); // Delimit by space
-    token = strtok(NULL, " "); // CARDREADER
-    char* reader_id = strtok(NULL, " "); // {id}
-    token = strtok(NULL, " "); // SCANNED
-    char* scanned_code = strtok(NULL, "#"); // {scanned}
-
+void handle_scanned_message(int client_socket, char* message) {    
+    char reader[20], id[10], scanned[20], scanned_code[50];
+    sscanf(message, "%s %s %s %s", reader, id, scanned, scanned_code);
     // Lookup scanned code in the 'authorisation.txt' file
     char* access_list = lookup_authorisation(scanned_code); 
     if (!access_list) {
         // No entry found for the scanned code, access is denied
-        send(client_socket, "DENIED#", 7, 0);
-        close(client_socket);
+        
+        send_command_to_reader(id, "DENIED#");
         return;
     }
 
     // Lookup card reader's ID in the 'connections.txt' file
-    int int_reader_id = atoi(reader_id);
+    int int_reader_id = atoi(id);
     int door_id = lookup_door_id(int_reader_id);
     if (!door_id) {
         // No door ID found for the card reader ID
-        send(client_socket, "DENIED#", 7, 0);
-        close(client_socket);
+        send_command_to_reader(id, "DENIED#");
         return;
     }
 
-       char door_id_str[50]; // Ensure the buffer is large enough for the int and null terminator
+    char door_id_str[50]; // Ensure the buffer is large enough for the int and null terminator
     sprintf(door_id_str, "%d", door_id);
     if (has_access(access_list, door_id)) {
         // Send the ALLOWED message
-        send(client_socket, "ALLOWED#", 8, 0);
-        close(client_socket);
+        send_command_to_reader(id, "ALLOWED#");
 
         // Connect to the door controller and send OPEN# command
         send_command_to_door(door_id_str, "OPEN#");
-        
         int door_socket = get_door_sockfd(door_id_str);
-
         char response[1024];
         recv(door_socket, response, sizeof(response), 0);
         if (strncmp(response, "OPENING#", 8) == 0) {
             memset(response, 0, sizeof(response)); // Clear the buffer
             recv(door_socket, response, sizeof(response), 0);
             if (strncmp(response, "OPENED#", 7) == 0) {
-                close(door_socket);
                 
                 usleep(door_open_duration); // Wait for {door open duration} microseconds
                 
@@ -271,7 +265,7 @@ int get_door_sockfd(const char* door_id) {
             door_address.sin_addr.s_addr = inet_addr(doors[i].address);
             door_address.sin_port = htons(doors[i].port);
 
-            // Connect to the door (assuming it's a TCP connection)
+            //connect to the door
             if (connect(sockfd, (struct sockaddr *)&door_address, sizeof(door_address)) < 0) {
                 perror("Connection failed");
                 close(sockfd);
@@ -282,7 +276,6 @@ int get_door_sockfd(const char* door_id) {
         }
     }
 
-    // If here, door not found
     printf("Door with id %s not found.\n", door_id);
     return -1;
 }
@@ -298,10 +291,9 @@ char* lookup_authorisation(const char* scanned_code) {
     while (fgets(line, sizeof(line), file)) {
         if (strstr(line, scanned_code) != NULL) {
             fclose(file);
-            return line;  // Note: returns the whole line. You might need to parse it further.
+            return line; 
         }
     }
-
     fclose(file);
     return NULL;
 }
@@ -335,27 +327,29 @@ int has_access(const char* access_data, int door_id) {
 int send_tcp_message(const char* address, int port, const char* message) {
     int sockfd;
     struct sockaddr_in server_addr;
-    // Create a socket
+    //dreate a socket
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         perror("Error creating socket");
         return -1;
     }
-    // Define the server address
+    printf("%s %d\n", address, port);
+    //define the server address
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
-    if (inet_pton(AF_INET, address, &server_addr.sin_addr) <= 0) {
-        perror("Error converting address");
-        close(sockfd);
-        return -1;
-    }
-    // Connect to the server
+    server_addr.sin_addr.s_addr = inet_addr(address);
+    // if (inet_pton(AF_INET, address, &server_addr.sin_addr) <= 0) {
+    //     perror("Error converting address");
+    //     close(sockfd);
+    //     return -1;
+    // }
+    //connect to the server
     if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("Error connecting to server");
         close(sockfd);
         return -1;
     }
-    // Send the message
+    //send the message
     int bytes_sent = send(sockfd, message, strlen(message), 0);
     if (bytes_sent < 0) {
         perror("Error sending message");
@@ -386,13 +380,13 @@ void register_device(char* msg) {
         token = strtok(NULL, " ");
         if (token) {
             strncpy(door.type, token, sizeof(door.type) - 1); 
-            door.type[sizeof(door.type) - 1] = '\0';  // Ensure null termination
+            door.type[sizeof(door.type) - 1] = '\0';  //ensure null termination
         }
     
         pthread_mutex_lock(&shared_memory.mutex);
         find_or_add_door(door);
         if (is_fire_alarm_registered() && strncmp(door.type, "FAIL_SAFE", 9) == 0) {
-            send_door_to_fire_alarm(door); // assuming you have a function to send door to fire alarm
+            send_door_to_fire_alarm(door); //assuming you have a function to send door to fire alarm
         }
         pthread_mutex_unlock(&shared_memory.mutex);
     }
@@ -441,17 +435,18 @@ void send_all_saved_doors_to_firealarm() {
         in_port_t door_port;
     } door_datagram, confirmation_datagram;
 
-    // Create socket
+    //create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd == -1) {
         printf("Could not create socket\n");
         return;
     }
 
-    // Prepare the sockaddr_in structure for the fire alarm system
+    //prepare the sockaddr_in structure for the fire alarm system
+    
     fire_alarm_addr.sin_family = AF_INET;
-    fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // assuming fire alarm system IP address
-    fire_alarm_addr.sin_port = htons(8888); // assuming fire alarm system port
+    fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); //assuming fire alarm system IP address
+    fire_alarm_addr.sin_port = htons(8888); //assuming fire alarm system port
 
     for (int i = 0; strlen(doors[i].id) > 0; i++) {
         if (strncmp(doors[i].type, "FAIL_SAFE", 9) == 0) {
@@ -513,27 +508,27 @@ void send_door_to_fire_alarm(Door door) {
         in_port_t door_port;
     } door_datagram, confirmation_datagram;
 
-    // Create socket
+    //create socket
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd == -1) {
         printf("Could not create socket");
         return;
     }
 
-    // Prepare the sockaddr_in structure for the fire alarm system
+    //prepare the sockaddr_in structure for the fire alarm system
     fire_alarm_addr.sin_family = AF_INET;
     fire_alarm_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // assuming fire alarm system IP address
     fire_alarm_addr.sin_port = htons(8888); // assuming fire alarm system port
 
-    // Initialize the door_datagram
+    //initialize the door_datagram
     strcpy(door_datagram.header, "DOOR");
     inet_aton(door.address, &door_datagram.door_addr);
     door_datagram.door_port = door.port;
 
     int sent = 0;
-    int retries = 3; // You can adjust this number based on how many retries you want.
+    int retries = 3; //you can adjust this number based on how many retries you want.
     while (retries > 0) {
-        // Send door data to the fire alarm system
+        //send door data to the fire alarm system
         if (sendto(sockfd, &door_datagram, sizeof(door_datagram), 0, (struct sockaddr *)&fire_alarm_addr, sizeof(fire_alarm_addr)) < 0) {
             puts("Send failed");
             return;
@@ -574,15 +569,14 @@ void send_door_to_fire_alarm(Door door) {
 void* handle_scanned_message_thread(void* arg) {
     ThreadArgs* thread_args = (ThreadArgs*) arg;
     handle_scanned_message(thread_args->socket, thread_args->message);
-    free(thread_args);  // Important to free allocated memory
-    pthread_exit(NULL); // Properly exit thread when done
+    free(thread_args);  //important to free allocated memory
+    pthread_exit(NULL); //properly exit thread when done
 }
 
 int find_or_add_door(Door new_door) {
     for (int i = 0; strlen(doors[i].id) > 0; i++) {
-        // Check if door with this ID already exists
         if (strcmp(doors[i].id, new_door.id) == 0) {
-            doors[i] = new_door; // Update existing
+            doors[i] = new_door; 
             return i;
         }
     }
@@ -594,7 +588,6 @@ int find_or_add_door(Door new_door) {
         }
     }
 
-    // If here, no space left
     fprintf(stderr, "Error: Door storage full!\n");
     return -1;
 }
@@ -739,7 +732,7 @@ void update_temperature(struct datagram_format *datagram) {
         int port = ntohs(datagram->address_list[i].sensor_port);
         inet_ntop(AF_INET, &datagram->address_list[i].sensor_addr, address, sizeof(address));
         
-        // Find the matching sensor or an empty slot
+        //find the matching sensor or an empty slot
         int j;
         for (j = 0; j < MAX_TEMPSENSORS; j++) {
             if (strcmp(tempSensors[j].address, address) == 0 && tempSensors[j].port == port) {
@@ -748,7 +741,7 @@ void update_temperature(struct datagram_format *datagram) {
                     tempSensors[j].timestamp = datagram->timestamp;
                 }
                 break;
-            } else if (strlen(tempSensors[j].id) == 0) {  // Empty slot
+            } else if (strlen(tempSensors[j].id) == 0) {  //empty slot
                 strncpy(tempSensors[j].id, (char *)&datagram->id, sizeof(tempSensors[j].id));
                 strncpy(tempSensors[j].address, address, sizeof(tempSensors[j].address));
                 tempSensors[j].port = port;
@@ -788,6 +781,18 @@ void send_command_to_door(char* door_id, char* command) {
     }
     fprintf(stderr, "Error: Door not found.\n");
 }
+
+void send_command_to_reader(char* reader_id, char* command) {
+    for (int i = 0; strlen(cardReaders[i].id) > 0; i++) {
+        if (strcmp(cardReaders[i].id, reader_id) == 0) {
+            // Assume send_tcp_message() is a function that sends a TCP message to a specific address and port
+            send_tcp_message(cardReaders[i].address, cardReaders[i].port, command);
+            return;
+        }
+    }
+    fprintf(stderr, "Error: Door not found.\n");
+}
+
 
 void send_udp_datagram_to_fire_alarm_unit() {
     int sockfd;
@@ -871,11 +876,9 @@ int main(int argc, char *argv[]) {
     shared_memory_path = argv[7];
     shared_memory_offset = atoi(argv[8]);
     // Initialize global data structures and mutexes
-    printf("Initializing global data");
     initialize_global_data();
 
     // Initialize TCP and UDP servers
-    printf("Initialize TCP and UDP servers");
     int tcp_sockfd = init_tcp_server(address_port);
     int udp_sockfd = init_udp_server(address_port);
 
@@ -885,7 +888,6 @@ int main(int argc, char *argv[]) {
     }
 
     // Create threads for TCP and UDP servers
-    printf("Create threads TCP and UDP servers");
     pthread_t tcp_thread, udp_thread;
     pthread_create(&tcp_thread, NULL, tcp_server_thread, &tcp_sockfd);
     pthread_create(&udp_thread, NULL, udp_server_thread, &udp_sockfd);
