@@ -91,6 +91,11 @@ typedef struct { // Define a component
 
 Component components[MAX_COMPONENTS]; // Array of components
 int component_count = 0;
+int firealarm_count = 0;
+int cardreader_count = 0;
+int door_count = 0;
+int callpoint_count = 0;
+int tempsensor_count = 0;
 
 typedef struct { // Define an event
     char type[25];
@@ -113,15 +118,23 @@ void parse_file(FILE *scenario_file) { // Parse senario file into components arr
             Component new_component; // Define new component
             
 
-            int config_index = 0; // New component config
-            while ((token = strtok(NULL, delims)) != NULL && config_index < 10) {
-                if (config_index == 0) {
+            int token_index = 0; // New component config
+            while ((token = strtok(NULL, delims)) != NULL && token_index < 10) {
+                if (token_index == 0) {
                     strcpy(new_component.type, token); // New component type
-                } else if (config_index > 0) {
-                    strcpy(new_component.configArray[config_index], token); // New component config element
+
+                    if (strcmp(token, "firealarm") == 0) { firealarm_count++; }
+                    else if (strcmp(token, "cardreader") == 0) { cardreader_count++; }
+                    else if (strcmp(token, "door") == 0) { door_count++; }
+                    else if (strcmp(token, "callpoint") == 0) { callpoint_count++; }
+                    else if (strcmp(token, "tempsensor") == 0) { tempsensor_count++; }
+
+                } else if (token_index > 0) {
+                    int config_index = token_index - 1;
+                    strcpy(new_component.configArray[(config_index)], token); // New component config element
                 }
                 
-                config_index++;
+                token_index++;
             }
 
             if (component_count < MAX_COMPONENTS) { 
@@ -157,7 +170,7 @@ void parse_file(FILE *scenario_file) { // Parse senario file into components arr
                 events[event_count] = new_event; // Add new event to event array
                 (event_count)++;
             } else {
-                printf("Exceeded maximum number of events.\n"); // TO DELETE
+                printf("Exceeded maximum number of events.\n");
                 break;
             }
         }
@@ -225,16 +238,22 @@ void shared_memory_init() { // Initialise
 
 
 pid_t pids[MAX_COMPONENTS]; // Array of process IDs
-int overseer_boot_count = -1, firealarm_boot_count = -1, cardreader_boot_count = -1, door_boot_count = -1, tempsensor_boot_count = -1, callpoint_boot_count = -1; // start at 0
+int firealarm_boot_count = 0, cardreader_boot_count = 0, door_boot_count = 0, tempsensor_boot_count = 0, callpoint_boot_count = 0;
 
-void spawn_processes() { // SOME CHILD PROCESSES BROKEN
+void spawn_processes() {
 
-    int i;
-    pid_t pid;
+    pid_t pid; // process ID
     
-    int port_number = 2999; // start at 3000
-    char firealarm_address_port[13];
-    char overseer_address_port[13];
+    int base_port = 3001; // start at 3002 (not including overseer (3000) and firealarm (3001))
+    char *overseer_address = "127.0.0.1:3000";
+    char *firealarm_address = "127.0.0.1:3001";
+
+    char address_port_str[13] = "127.0.0.1:"; // For building address:port
+    char port_str[20];
+
+    char shm_offset_str[20]; // For calculating shm offset
+
+    int component_num;
 
     pid = fork();
         
@@ -246,113 +265,161 @@ void spawn_processes() { // SOME CHILD PROCESSES BROKEN
         
         usleep(250000); // 250 milliseconds
 
-        for (i = 1; i < component_count; i++) {
+        for (component_num = 1; component_num < component_count; component_num++) { //Cycle through components
 
-            pid = fork();
+            if (strcmp(components[component_num].type, "firealarm") == 0) { // FIREALARM THREAD
 
-            if (pid < 0) {
+                pid = fork();
+
+                if (pid < 0) {
+                    fprintf(stderr, "Fork failed");
+                    exit(1);
+
+                } else if (pid == 0) {
+
+
+                    size_t shm_offset = offsetof(SharedMemory, firealarmMemoryArray[firealarm_boot_count]);
+                    sprintf(shm_offset_str, "%zu", shm_offset);
+
+                    execl("./firealarm", "firealarm", firealarm_address, components[component_num].configArray[0], components[component_num].configArray[1], components[component_num].configArray[2], NULL, FILEPATH, shm_offset_str, overseer_address, (char *) NULL);
+                    fprintf(stderr, "Fire alarm execl failed");
+                    exit(1);
+                } else {
+
+                    firealarm_boot_count++;
+                    pids[component_num] = pid;
+                    continue;
+                }
+
+            } else if (strcmp(components[component_num].type, "cardreader") == 0) { // CARDREADER THREADS
+
+                pid = fork();
+
+                if (pid < 0) {
                 fprintf(stderr, "Fork failed");
                 exit(1);
 
-            } else if (pid == 0) {
-                port_number ++;
+                } else if (pid == 0) {
 
-                char address_port[13] = "127.0.0.1:";
-                char port_str[20];
-                sprintf(port_str, "%d", port_number);
-                strcat(address_port, port_str);
+                    int port_number = base_port + component_num; // Create address:port
+                    sprintf(port_str, "%d", port_number);
+                    strcat(address_port_str, port_str);
 
-                if (strcmp(components[i].type, "firealarm") == 0) {
-
-                    firealarm_boot_count ++;
-                    strcpy(firealarm_address_port, address_port);
-                    size_t shm_offset = offsetof(SharedMemory, firealarmMemoryArray[firealarm_boot_count]);
-                    char shm_offset_str[20];
-                    sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./firealarm", "firealarm", address_port, components[i].configArray[0], components[i].configArray[1], components[i].configArray[2], NULL, FILEPATH, shm_offset_str, "127.0.0.1:3000", (char *) NULL);
-                    fprintf(stderr, "Fire alarm execl failed");
-                    exit(1);
-
-                } else if (strcmp(components[i].type, "cardreader") == 0) {
-                
-                    cardreader_boot_count ++; // Boot new card reader
-
-                    size_t shm_offset = offsetof(SharedMemory, cardreaderMemoryArray[cardreader_boot_count]);
-                    char shm_offset_str[20];
+                    size_t shm_offset = offsetof(SharedMemory, cardreaderMemoryArray[firealarm_boot_count]); // Calculate shm offset
                     sprintf(shm_offset_str, "%zu", shm_offset);
 
-                    execl("./cardreader", "cardreader", components[i].configArray[1], components[i].configArray[2], FILEPATH, shm_offset_str, "127.0.0.1:3000", (char *) 0);
+                    execl("./cardreader", "cardreader", components[component_num].configArray[0], components[component_num].configArray[1], FILEPATH, shm_offset_str, overseer_address, (char *) 0);
                     fprintf(stderr, "Cardreader execl failed");
                     exit(1);
+                } else {
 
-                } else if (strcmp(components[i].type, "door") == 0) {
+                    cardreader_boot_count++;
+                    pids[component_num] = pid;
+                    continue;
+                }
+                
+            } else if (strcmp(components[component_num].type, "door") == 0) { // DOOR THREADS
 
-                    door_boot_count ++;
-                    size_t shm_offset = offsetof(SharedMemory, doorMemoryArray[door_boot_count]);
-                    char shm_offset_str[20];
+                pid = fork();
+
+                if (pid < 0) {
+                    fprintf(stderr, "Fork failed");
+                   exit(1);
+
+                } else if (pid == 0) {
+
+                    int port_number = base_port + component_num; // Create address:port
+                    sprintf(port_str, "%d", port_number);
+                    strcat(address_port_str, port_str);
+
+                    size_t shm_offset = offsetof(SharedMemory, doorMemoryArray[door_boot_count]); // Calculate shm offset
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./door", "door", components[i].configArray[0], address_port, components[i].configArray[1], FILEPATH, shm_offset_str, "127.0.0.1:3000", (char *) NULL);
+
+                    execl("./door", "door", components[component_num].configArray[0], address_port_str, components[component_num].configArray[1], FILEPATH, shm_offset_str, overseer_address, (char *) NULL);
                     fprintf(stderr, "Door execl failed");
                     exit(1);
-                
-                } else if (strcmp(components[i].type, "callpoint") == 0) {
-                
-                    callpoint_boot_count ++;
+                } else {
+
+                    door_boot_count++;
+                    pids[component_num] = pid;
+                    continue;
+                }
+
+            } else if (strcmp(components[component_num].type, "callpoint") == 0) { // CALLPOINT THREAD
+
+                pid = fork();
+
+                if (pid < 0) {
+                    fprintf(stderr, "Fork failed");
+                   exit(1);
+
+                } else if (pid == 0) {
+
+                    int port_number = base_port + component_num; // Create address:port
+                    sprintf(port_str, "%d", port_number);
+                    strcat(address_port_str, port_str);
+
                     size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
-                    char shm_offset_str[20];
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./callpoint", "callpoint", components[i].configArray[1], FILEPATH, shm_offset_str, firealarm_address_port, (char *) NULL); // Check firealarm_address_port is working
+
+                    execl("./callpoint", "callpoint", components[component_num].configArray[1], FILEPATH, shm_offset_str, firealarm_address, (char *) NULL); // Check firealarm_address_port is working
                     fprintf(stderr, "Callpoint execl failed");
                     exit(1);
+                } else {
 
-                } else if (strcmp(components[i].type, "tempsensor") == 0) {
-                
-                    callpoint_boot_count ++;
-                    size_t shm_offset = offsetof(SharedMemory, callpointMemoryArray[callpoint_boot_count]);
-                    char shm_offset_str[20];
+                    callpoint_boot_count++;
+                    pids[component_num] = pid;
+                    continue;
+                }
+
+            } else if (strcmp(components[component_num].type, "tempsensor") == 0) { // TEMPSENSOR THREADS
+
+                pid = fork();
+
+                if (pid < 0) {
+                    fprintf(stderr, "Fork failed");
+                   exit(1);
+
+                } else if (pid == 0) {
+
+                    int port_number = base_port + component_num; // Create address:port
+                    sprintf(port_str, "%d", port_number);
+                    strcat(address_port_str, port_str);
+                    
+                    size_t shm_offset = offsetof(SharedMemory, tempsensorMemoryArray[tempsensor_boot_count]);
                     sprintf(shm_offset_str, "%zu", shm_offset);
-                    execl("./tempsensor", "tempsensor", components[i].configArray[0], address_port, components[i].configArray[1], components[i].configArray[2], FILEPATH, shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
+
+                    execl("./tempsensor", "tempsensor", components[component_num].configArray[0], address_port_str, components[component_num].configArray[1], components[component_num].configArray[2], FILEPATH, shm_offset_str, NULL, (char *) NULL); // FIRST NULL IS RECIEVER LIST
                     fprintf(stderr, "Temperature sensor execl failed");
                     exit(1);
-
                 } else {
-                printf("Unknown component type: %s\n", components[i].type);
-                exit(1);
+
+                    tempsensor_boot_count++;
+                    pids[component_num] = pid;
+                    continue;
                 }
             }
         }
 
-        exit(0);
-
-    } else { // Parent process
+    } else { // Parent process (Overseer)
             
         pids[0] = pid;
-            
-        port_number ++;
-        overseer_boot_count ++;
-        
-        strcpy(overseer_address_port, "127.0.0.1:"); // Create address:port stringS
-        char port_str[20];
-        sprintf(port_str, "%d", port_number);
-        strcat(overseer_address_port, port_str);        
 
-        size_t shm_offset = offsetof(SharedMemory, overseerMemoryArray[overseer_boot_count]); // Calculate and cast offset to str
+        size_t shm_offset = offsetof(SharedMemory, overseerMemoryArray[0]); // Calculate and cast offset to str
         char *shm_offset_str = (char*)malloc(5 * sizeof(char));
         snprintf(shm_offset_str, 5, "%zu", shm_offset);
 
-        execl("./overseer", "overseer", overseer_address_port, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", FILEPATH, shm_offset_str, (char *) NULL);
+        execl("./overseer", "overseer", overseer_address, components[0].configArray[1], components[0].configArray[2], "authorisation.txt", "connections.txt", "layout.txt", FILEPATH, shm_offset_str, (char *) NULL);
         fprintf(stderr, "Overseer execl failed");
         free(shm_offset_str);
         exit(1);
         }   
 }
 
-void simulate_events(FILE *scenario_file) {
+void simulate_events() {
 
     for (int i = 0; i < event_count; i++) {
         if (strcmp(events[i].type, "CARD_SCAN") == 0) {
-            
-            printf("EVENT %d: CARD_SCAN", i);
             
             int num = atoi(events[i].configArray[2]); // which cardreader?
 
@@ -362,50 +429,38 @@ void simulate_events(FILE *scenario_file) {
 
             pthread_mutex_unlock(&sharedMemory->cardreaderMemoryArray[num].mutex);// mutex unlock
 
-            pthread_cond_signal(&(sharedMemory->cardreaderMemoryArray[num].response_cond)); // update scanned_cond
+            pthread_cond_signal(&(sharedMemory->cardreaderMemoryArray[num].scanned_cond)); // update scanned_cond
 
         } else if (strcmp(events[i].type, "CALLPOINT_TRIGGER") == 0) {
 
-            printf("EVENT %d: CALLPOINT_TRIGGER", i);
+            int num = atoi(events[i].configArray[2]); // which callpoint?
+
+            pthread_mutex_lock(&sharedMemory->callpointMemoryArray[num].mutex); // mutex lock
+
+            sharedMemory->callpointMemoryArray[num].status = '*'; // Update status
+
+            pthread_mutex_unlock(&sharedMemory->callpointMemoryArray[num].mutex);// mutex unlock
+
+            pthread_cond_signal(&(sharedMemory->callpointMemoryArray[num].cond)); // update cond
 
         } else if (strcmp(events[i].type, "TEMP_CHANGE") == 0) {
 
-            printf("EVENT %d: TEMP_CHANGE", i);
+            int num = atoi(events[i].configArray[2]); // which tempsensor?
 
+            pthread_mutex_lock(&sharedMemory->tempsensorMemoryArray[num].mutex); // mutex lock
+
+            sharedMemory->tempsensorMemoryArray[num].temperature = atof(events[i].configArray[2]); // Update temperature
+
+            pthread_mutex_unlock(&sharedMemory->tempsensorMemoryArray[num].mutex);// mutex unlock
+
+            pthread_cond_signal(&(sharedMemory->tempsensorMemoryArray[num].cond)); // update cond
         }
     }
-
-    /*
-    char line[256];
-    char component[10];
-    char action[20];
-    float value;
-
-    while (fgets(line, sizeof(line), scenario_file)) {
-        if (sscanf(line, "%s %s %f", component, action, &value) == 3) {
-            if (strcmp(component, "MOTOR") == 0) {
-                if (strcmp(action, "speed") == 0) {
-                    sharedMemory->motor.speed = (int)value;
-                } else if (strcmp(action, "direction") == 0) {
-                    sharedMemory->motor.direction = (int)value;
-                } else if (strcmp(action, "status") == 0) {
-                    sharedMemory->motor.status = (int)value;
-                }
-            } else if (strcmp(component, "SENSOR") == 0) {
-                if (strcmp(action, "temperature") == 0) {
-                    sharedMemory->sensor.temperature = value;
-                } else if (strcmp(action, "pressure") == 0) {
-                    sharedMemory->sensor.pressure = (int)value;
-                }
-            }
-            // You can extend this to handle communication and other components
-        }
-    }
-    */
 }
 
 void cleanup() {
-    for (int i = 0; i < component_count; i++) {
+
+    for (int i = 1; i < component_count; i++) {
         kill(pids[i], SIGTERM); // Send a termination signal
         waitpid(pids[i], NULL, 0); // Wait for child process to terminate
     }
@@ -416,10 +471,12 @@ void cleanup() {
         exit(1);
     }
 
-    if (shm_unlink("/shared_memory") == -1) {
+    if (shm_unlink(FILEPATH) == -1) {
         perror("shm_unlink");
         exit(1);
     }
+
+    kill(pids[0], SIGTERM); // Suicide
 }
 
 
@@ -443,18 +500,16 @@ int main(int argc, char *argv[]) {
     create_shared_memory(); // Create shm structure
     shared_memory_init(); // Load shm init values
 
-    //for (int i = 0; i < event_count; i++) {
-    //    printf("Event number %d has type %s\n", i, events[i].type);
-    //}
-    
     spawn_processes();
 
-    simulate_events(scenario_file);
+    usleep(1000000); // 1 second
+
+    simulate_events();
+
+    usleep(1000000); // 1 second
 
     cleanup();
 
     fclose(scenario_file);
-
     return 0;
 }
-
