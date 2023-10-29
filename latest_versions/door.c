@@ -49,7 +49,7 @@ int send_init_message(const char *id, const char *addr_port, const char *securit
 void handle_door_operations(int client_sock, SharedMemory *sharedMem, char *buffer, size_t bufferSize) {
     ssize_t n = read(client_sock, buffer, bufferSize - 1);
     if (n < 0) {
-        printf("recv\n");
+        perror("recv\n");
         close(client_sock);
         return;
     }
@@ -61,38 +61,66 @@ void handle_door_operations(int client_sock, SharedMemory *sharedMem, char *buff
 
     if (strncmp(buffer, "OPEN#", 5) == 0) {
         if (door_status == 'O') {
-            send(client_sock, "ALREADY#", 8, 0);
+            send(client_sock, "ALREADY#", strlen("ALREADY#"), 0);
         } else {
-            send(client_sock, "OPENING#", 8, 0);
+            ssize_t num_bytes_sent;
+
+            num_bytes_sent = send(client_sock, "OPENING#", strlen("OPENING#"), 0);
+            if (num_bytes_sent < 0) {
+                perror("send OPENING#\n");
+                printf("sock failed: %d", client_sock);
+            }
+            printf("sock: %d", client_sock);
             pthread_mutex_lock(&sharedMem->mutex);
-            sharedMem->status = 'O';
+            sharedMem->status = 'o';
             pthread_cond_signal(&sharedMem->cond_start);
-            printf("waiting on cond");
             pthread_cond_wait(&sharedMem->cond_end, &sharedMem->mutex);
             pthread_mutex_unlock(&sharedMem->mutex);
-            send(client_sock, "OPENED#", 7, 0);
-            printf("sent\n");
+            num_bytes_sent = send(client_sock, "OPENED#", strlen("OPENED#"), 0);
+            if (num_bytes_sent < 0) {
+                perror("send OPENED#\n");
+                printf("sock failed: %d", client_sock);
+            }
+            printf("sock: %d", client_sock);
         }
     } else if (strncmp(buffer, "CLOSE#", 6) == 0) {
             if (door_status == 'C') {
-            send(client_sock, "ALREADY#", 8, 0);
+            send(client_sock, "ALREADY#", strlen("ALREADY#"), 0);
+            printf("sock: %d", client_sock);
         } else {
-            send(client_sock, "CLOSING#", 8, 0);
+            ssize_t num_bytes_sent;
+            num_bytes_sent = send(client_sock, "CLOSING#", strlen("CLOSING#"), 0);
+            if (num_bytes_sent < 0) {
+                perror("send CLOSING#\n");
+                printf("sock failed: %d", client_sock);
+            }
+            printf("sock: %d", client_sock);
             pthread_mutex_lock(&(sharedMem->mutex));
-            sharedMem->status = 'C';
+            sharedMem->status = 'c';
             pthread_cond_signal(&(sharedMem->cond_start));
             pthread_cond_wait(&(sharedMem->cond_end), &(sharedMem->mutex));
             pthread_mutex_unlock(&(sharedMem->mutex));
-            send(client_sock, "CLOSED#", 7, 0);
+            num_bytes_sent = send(client_sock, "CLOSED#", strlen("CLOSED#"), 0);
+            if (num_bytes_sent < 0) {
+                perror("send CLOSED#\n");
+                printf("sock failed: %d", client_sock);
+            }
+            printf("sock: %d", client_sock);
         }
     } else if (strncmp(buffer, "OPEN_EMERG#", 11) == 0) {
+        pthread_mutex_lock(&(sharedMem->mutex));
         if (sharedMem->status != 'O') {
             sharedMem->status = 'o'; // Set status to opening
             pthread_cond_signal(&(sharedMem->cond_start));
             pthread_cond_wait(&sharedMem->cond_end, &sharedMem->mutex); // Wait for the door to open
-            sharedMem->status = 'O'; // Set status to open
         }
-        send(client_sock, "EMERGENCY_MODE#", 15, 0);
+        pthread_mutex_unlock(&(sharedMem->mutex));
+        ssize_t num_bytes_sent;
+        num_bytes_sent = send(client_sock, "EMERGENCY_MODE#", strlen("EMERGENCY_MODE#"), 0);
+        if (num_bytes_sent < 0) {
+            printf("sock failed: %d", client_sock);
+            perror("send EMERGENCY_MODE#\n");
+        }
         
         // From this point, the door will not respond to CLOSE# commands
         while (1) {
@@ -100,26 +128,39 @@ void handle_door_operations(int client_sock, SharedMemory *sharedMem, char *buff
             if (n < 0) break;
             buffer[n] = '\0';
             if (strncmp(buffer, "CLOSE#", 6) == 0) {
-                send(client_sock, "EMERGENCY_MODE#", 15, 0);
+                ssize_t num_bytes_sent;
+                num_bytes_sent = send(client_sock, "EMERGENCY_MODE#", strlen("EMERGENCY_MODE#"), 0);
+                if (num_bytes_sent < 0) {
+                    perror("send EMERGENCY_MODE#\n");
+                }
             }
         }
         
     } else if (strncmp(buffer, "CLOSE_SECURE#", 13) == 0) {
+        pthread_mutex_lock(&(sharedMem->mutex));
         if (sharedMem->status != 'C') {
             sharedMem->status = 'c'; // Set status to closing
             pthread_cond_signal(&(sharedMem->cond_start));
             pthread_cond_wait(&sharedMem->cond_end, &sharedMem->mutex); // Wait for the door to close
-            sharedMem->status = 'C'; // Set status to closed
         }
-        send(client_sock, "SECURE_MODE#", 12, 0);
-        
+        pthread_mutex_unlock(&(sharedMem->mutex));
+        ssize_t num_bytes_sent;
+
+        num_bytes_sent= send(client_sock, "SECURE_MODE#", strlen("SECURE_MODE#"), 0);
+        if (num_bytes_sent < 0) {
+            perror("send SECURE_MODE#\n");
+        }
         // From this point, the door will not respond to OPEN# commands
         while (1) {
             ssize_t n = read(client_sock, buffer, bufferSize - 1);
             if (n <= 0) break;
             buffer[n] = '\0';
             if (strncmp(buffer, "OPEN#", 5) == 0) {
-                send(client_sock, "SECURE_MODE#", 12, 0);
+                ssize_t num_bytes_sent;
+                num_bytes_sent = send(client_sock, "SECURE_MODE#", strlen("SECURE_MODE#"), 0);
+                if (num_bytes_sent < 0) {
+                    perror("send SECURE_MODE#\n");
+                }
             }
         }
     }
@@ -141,7 +182,7 @@ int main(int argc, char *argv[]) {
 
     int shm_fd = shm_open(shm_path, O_RDWR, 0);
     if (shm_fd == -1) {
-        perror("Failed to open shared memory");
+        perror("Failed to open shared memory\n");
         exit(EXIT_FAILURE);
     }
 
@@ -157,19 +198,11 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
     SharedMemory *sharedMem = (SharedMemory *)(shm + shm_offset);
-    pthread_mutexattr_t attrmutex;
-    pthread_mutexattr_init(&attrmutex);
-    pthread_mutexattr_setpshared(&attrmutex, PTHREAD_PROCESS_SHARED);
-
-    pthread_condattr_t attrcond;
-    pthread_condattr_init(&attrcond);
-    pthread_condattr_setpshared(&attrcond, PTHREAD_PROCESS_SHARED);
-
-    pthread_mutex_init(&sharedMem->mutex, &attrmutex);
-    pthread_cond_init(&sharedMem->cond_end, &attrcond);
-    pthread_cond_init(&sharedMem->cond_start, &attrcond);
     // Default door status
+
+    pthread_mutex_lock(&(sharedMem->mutex));
     sharedMem->status = 'C';
+    pthread_mutex_unlock(&(sharedMem->mutex));
 
     if (send_init_message(id, addr_port, security_mode, overseer_addr, overseer_port) != 0) {
         fprintf(stderr, "Failed to send initialization message.\n");
@@ -183,7 +216,7 @@ int main(int argc, char *argv[]) {
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
-        perror("ERROR opening socket");
+        perror("ERROR opening socket\n");
         exit(EXIT_FAILURE);
     }
     char ip[16];
@@ -197,12 +230,13 @@ int main(int argc, char *argv[]) {
     server_addr.sin_addr.s_addr = inet_addr(ip);
 
     if (bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("ERROR on binding");
+        perror("ERROR on binding\n");
         exit(EXIT_FAILURE);
     }
     listen(sockfd, 5);
 
     while (1) {
+        printf("In while command.\n");
         newsockfd = accept(sockfd, (struct sockaddr *)&client_addr, &clientlen);
         if (newsockfd < 0) {
             perror("ERROR on accept");
@@ -218,7 +252,7 @@ int main(int argc, char *argv[]) {
         }
         buffer[n] = '\0';
         handle_door_operations(newsockfd, sharedMem, buffer, sizeof(buffer));
-
+        printf("Done command.\n");
         close(newsockfd);
     }
 
