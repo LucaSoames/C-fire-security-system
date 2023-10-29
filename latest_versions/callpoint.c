@@ -68,33 +68,18 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
     SharedMemory *sharedMem = (SharedMemory *)(shm + shm_offset);
-
-    pthread_mutexattr_t attrmutex;
-    pthread_mutexattr_init(&attrmutex);
-    pthread_mutexattr_setpshared(&attrmutex, PTHREAD_PROCESS_SHARED);
-
-    pthread_condattr_t attrcond;
-    pthread_condattr_init(&attrcond);
-    pthread_condattr_setpshared(&attrcond, PTHREAD_PROCESS_SHARED);
-
-    pthread_mutex_init(&sharedMem->mutex, &attrmutex);
-    pthread_cond_init(&sharedMem->cond, &attrcond);
     while (1) { 
         pthread_mutex_lock(&sharedMem->mutex);
 
+        while (sharedMem->status != '*') {
+            pthread_cond_wait(&sharedMem->cond, &sharedMem->mutex);
+        }
         if (sharedMem->status == '*') {
             send_fire_emergency_datagram(fire_alarm_addr, fire_alarm_port);
-            pthread_mutex_unlock(&sharedMem->mutex);
-            printf("not stuck\n");
             usleep(resend_delay);
-        } else {
-            while (sharedMem->status != '*') {
-                printf("in loop\n");
-                pthread_cond_wait(&sharedMem->cond, &sharedMem->mutex);
-            }
-            pthread_mutex_unlock(&sharedMem->mutex);
-            printf("not stuck\n");
         }
+
+        pthread_mutex_unlock(&sharedMem->mutex);
     }
 
     munmap(sharedMem, sizeof(SharedMemory));
